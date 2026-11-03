@@ -94,3 +94,93 @@ async def get_tasks_by_quadrant(quadrant: str) -> dict:
         "count": len(filtered_tasks),
         "tasks": filtered_tasks
     }
+
+@app.get("/tasks/{task_id}")
+async def get_task_by_id(task_id: int) -> dict:
+    for task in tasks_db:
+        if task["id"] == task_id:
+            return task
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Задача с ID {task_id} не найдена"
+    )
+
+@app.get("/tasks/stats")
+async def get_tasks_stats() -> dict:
+    return {
+        "total_tasks": len(tasks_db),
+
+        "by_quadrant": {
+            quadrant: sum(
+                1 for task in tasks_db
+                if task["quadrant"] == quadrant
+            )
+            for quadrant in ["Q1", "Q2", "Q3", "Q4"]
+        },
+
+        "by_status": {
+            "completed": sum(
+                1 for task in tasks_db
+                if task["completed"]
+            ),
+            "pending": sum(
+                1 for task in tasks_db
+                if not task["completed"]
+            )
+        }
+    }
+
+@app.get("/tasks/status/{status}")
+async def get_tasks_by_status(status: str) -> dict:
+    if status not in ["completed", "pending"]:
+        raise HTTPException(
+            status_code=404,
+            detail="Статус не найден. Используйте completed или pending"
+        )
+
+    is_completed = status == "completed"
+
+    filtered_tasks = [
+        task
+        for task in tasks_db
+        if task["completed"] == is_completed
+    ]
+
+    return {
+        "status": status,
+        "count": len(filtered_tasks),
+        "tasks": filtered_tasks
+    }
+
+
+@app.get("/tasks/search")
+async def search_tasks(q: str) -> dict:
+    query = q.strip()
+
+    if len(query) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Поисковый запрос должен содержать минимум 2 символа"
+        )
+
+    filtered_tasks = [
+        task
+        for task in tasks_db
+        if (
+            query.casefold() in task["title"].casefold()
+            or query.casefold() in (task["description"] or "").casefold()
+        )
+    ]
+
+    if not filtered_tasks:
+        raise HTTPException(
+            status_code=404,
+            detail="Задачи по запросу не найдены"
+        )
+
+    return {
+        "query": query,
+        "count": len(filtered_tasks),
+        "tasks": filtered_tasks
+    }
