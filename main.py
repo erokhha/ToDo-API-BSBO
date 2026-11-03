@@ -1,12 +1,15 @@
 # Главный файл приложения
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from typing import List, Dict, Any
 from datetime import datetime
 
 app = FastAPI(
     title="ToDo лист API",
     description="API для управления задачами с использованием матрицы Эйзенхауэра",
-    version="1.0.0"
+    version="1.0.0",
+    contact = {
+        "name": "Ерохина Светлана",
+    }
 )
 
 # Временное хранилище (позже будет заменено на PostgreSQL)
@@ -52,3 +55,42 @@ tasks_db: List[Dict[str, Any]] = [
         "created_at": datetime.now()
     },
 ]
+
+
+@app.get("/")
+async def welcome() -> dict:
+    return {
+        "title": app.title,
+        "description": app.description,
+        "version": app.version,
+        "contact": app.contact
+    }
+
+
+@app.get("/tasks")
+async def get_all_tasks() -> dict:
+    return {
+        "count": len(tasks_db),
+        "tasks": tasks_db
+    }
+
+
+@app.get("/tasks/quadrant/{quadrant}")
+async def get_tasks_by_quadrant(quadrant: str) -> dict:
+    if quadrant not in ["Q1", "Q2", "Q3", "Q4"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Неверный квадрант. Используйте: Q1, Q2, Q3, Q4"
+        )
+
+    filtered_tasks = [
+        task
+        for task in tasks_db
+        if task["quadrant"] == quadrant
+    ]
+
+    return {
+        "quadrant": quadrant,
+        "count": len(filtered_tasks),
+        "tasks": filtered_tasks
+    }
