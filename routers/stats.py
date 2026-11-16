@@ -1,12 +1,12 @@
 from fastapi import APIRouter
 
-from .tasks import tasks_db
+from database import tasks_db
 
 
-router = APIRouter(prefix="/tasks", tags=["stats"])
+router = APIRouter(prefix="/stats", tags=["stats"])
 
 
-@router.get("/stats")
+@router.get("")
 async def get_tasks_stats() -> dict:
     return {
         "total_tasks": len(tasks_db),

@@ -10,8 +10,8 @@ app = FastAPI(
     contact={"name": "Ерохина Светлана"},
 )
 
-app.include_router(stats.router)
-app.include_router(tasks.router)
+app.include_router(stats.router, prefix="/api/v1")
+app.include_router(tasks.router, prefix="/api/v1")
 
 
 @app.get("/")
