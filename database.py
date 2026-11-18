@@ -22,6 +22,15 @@ async def init_db() -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
         await connection.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ"))
+        await connection.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS user_id INTEGER"))
+        await connection.execute(text("CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id)"))
+        existing = await connection.scalar(
+            text("SELECT 1 FROM pg_constraint WHERE conrelid = 'tasks'::regclass AND confrelid = 'users'::regclass AND contype = 'f'")
+        )
+        if not existing:
+            await connection.execute(
+                text("ALTER TABLE tasks ADD CONSTRAINT fk_tasks_user_id FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE")
+            )
 
 
 async def drop_db() -> None:

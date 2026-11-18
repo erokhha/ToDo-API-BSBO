@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
 
@@ -21,6 +21,8 @@ class Task(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    owner = relationship("User", back_populates="tasks")
 
     def __repr__(self) -> str:
         return f"<Task(id={self.id}, title={self.title!r}, quadrant={self.quadrant!r})>"
@@ -37,4 +39,5 @@ class Task(Base):
             "created_at": self.created_at,
             "completed_at": self.completed_at,
             "deadline_at": self.deadline_at,
+            "user_id": self.user_id,
         }

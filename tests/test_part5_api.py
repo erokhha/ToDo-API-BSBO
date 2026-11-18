@@ -1,12 +1,24 @@
 import json
+import os
 import socket
 import subprocess
 import sys
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from uuid import uuid4
+
+import psycopg2
+from dotenv import load_dotenv
+from sqlalchemy.engine import make_url
+
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
 class Part5ApiTest(unittest.TestCase):
@@ -24,24 +36,46 @@ class Part5ApiTest(unittest.TestCase):
         for _ in range(80):
             try:
                 cls.request("GET", "/openapi.json")
-                return
+                break
             except URLError:
                 time.sleep(0.1)
-        cls.server.terminate()
-        raise RuntimeError("API server did not start")
+        else:
+            cls.server.terminate()
+            raise RuntimeError("API server did not start")
+        suffix = uuid4().hex[:10]
+        cls.email = f"part5_{suffix}@example.com"
+        cls.password = "Part5Password!"
+        code, user = cls.request(
+            "POST",
+            "/api/v2/auth/register",
+            {"nickname": f"part5_{suffix}", "email": cls.email, "password": cls.password},
+        )
+        if code != 201:
+            cls.server.terminate()
+            raise RuntimeError(f"Test registration failed: {code}")
+        cls.user_id = user["id"]
+        _, token = cls.request("POST", "/api/v2/auth/login", {"username": cls.email, "password": cls.password}, form=True)
+        cls.token = token["access_token"]
 
     @classmethod
     def tearDownClass(cls):
         cls.server.terminate()
         cls.server.wait(timeout=5)
+        url = make_url(os.environ["DATABASE_URL"])
+        with psycopg2.connect(host=url.host, port=url.port, user=url.username, password=url.password, dbname=url.database) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM users WHERE id = %s", (cls.user_id,))
 
     @classmethod
-    def request(cls, method, path, body=None):
-        data = json.dumps(body).encode() if body is not None else None
+    def request(cls, method, path, body=None, form=False):
+        data = urlencode(body).encode() if form else json.dumps(body).encode() if body is not None else None
+        headers = {"Content-Type": "application/x-www-form-urlencoded" if form else "application/json"}
+        if getattr(cls, "token", None):
+            headers["Authorization"] = f"Bearer {cls.token}"
         request = Request(
             cls.base + path,
             data=data,
-            headers={"Content-Type": "application/json"} if data else {},
+            headers=headers,
             method=method,
         )
         try:
@@ -143,19 +177,20 @@ class Part5SchedulerTest(unittest.IsolatedAsyncioTestCase):
     async def test_late_completion_statistics(self):
         from database import AsyncSessionLocal, engine, init_db
         from models import Task
+        from models import UserRole
         from routers.stats import get_timing_stats
 
         await init_db()
         now = datetime.now(timezone.utc)
         task = Task(title="Part5 late completion test", is_important=False, is_urgent=True, quadrant="Q3", completed=True, completed_at=now, deadline_at=now - timedelta(days=1))
         async with AsyncSessionLocal() as db:
-            before = await get_timing_stats(db)
+            before = await get_timing_stats(db, SimpleNamespace(id=0, role=UserRole.ADMIN))
             db.add(task)
             await db.commit()
             task_id = task.id
         try:
             async with AsyncSessionLocal() as db:
-                after = await get_timing_stats(db)
+                after = await get_timing_stats(db, SimpleNamespace(id=0, role=UserRole.ADMIN))
             self.assertEqual(after.completed_late, before.completed_late + 1)
         finally:
             async with AsyncSessionLocal() as db:

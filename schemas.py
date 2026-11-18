@@ -28,6 +28,7 @@ class TaskUpdate(BaseModel):
 
 class TaskResponse(TaskBase):
     id: int
+    user_id: int | None
     is_urgent: bool
     quadrant: str
     completed: bool
@@ -42,6 +43,7 @@ class TaskResponse(TaskBase):
         overdue = bool(task.deadline_at and not task.completed and as_utc(task.deadline_at) < datetime.now(timezone.utc))
         return cls(
             id=task.id,
+            user_id=task.user_id,
             title=task.title,
             description=task.description,
             is_important=task.is_important,

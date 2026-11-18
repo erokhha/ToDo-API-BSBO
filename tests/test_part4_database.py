@@ -49,6 +49,7 @@ class Part4DatabaseTest(unittest.IsolatedAsyncioTestCase):
             "created_at",
             "completed_at",
             "deadline_at",
+            "user_id",
         }
         self.assertEqual(set(inspect(Task).columns.keys()), expected)
         self.assertTrue(Task.__table__.c.created_at.type.timezone)

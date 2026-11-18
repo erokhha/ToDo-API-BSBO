@@ -5,7 +5,8 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_async_session
-from models import Task
+from dependencies import get_current_user
+from models import Task, User, UserRole
 from schemas import TaskCreate, TaskResponse, TaskUpdate
 from utils import as_utc, calculate_urgency, determine_quadrant
 
@@ -13,11 +14,17 @@ from utils import as_utc, calculate_urgency, determine_quadrant
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
-async def find_task(task_id: int, db: AsyncSession) -> Task:
+async def find_task(task_id: int, db: AsyncSession, user: User) -> Task:
     task = await db.get(Task, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Задача не найдена")
+    if user.role != UserRole.ADMIN and task.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Нет доступа к этой задаче")
     return task
+
+
+def visible(statement, user: User):
+    return statement if user.role == UserRole.ADMIN else statement.where(Task.user_id == user.id)
 
 
 def task_list(tasks: list[Task]) -> list[TaskResponse]:
@@ -25,54 +32,83 @@ def task_list(tasks: list[Task]) -> list[TaskResponse]:
 
 
 @router.get("")
-async def get_all_tasks(db: AsyncSession = Depends(get_async_session)) -> dict:
-    tasks = (await db.execute(select(Task).order_by(Task.id))).scalars().all()
+async def get_all_tasks(
+    db: AsyncSession = Depends(get_async_session),
+    user: User = Depends(get_current_user),
+) -> dict:
+    tasks = (await db.execute(visible(select(Task), user).order_by(Task.id))).scalars().all()
     return {"count": len(tasks), "tasks": task_list(tasks)}
 
 
 @router.get("/today")
-async def get_tasks_due_today(db: AsyncSession = Depends(get_async_session)) -> dict:
+async def get_tasks_due_today(
+    db: AsyncSession = Depends(get_async_session),
+    user: User = Depends(get_current_user),
+) -> dict:
     start = datetime.combine(datetime.now(timezone.utc).date(), time.min, timezone.utc)
     end = start + timedelta(days=1)
-    tasks = (await db.execute(select(Task).where(Task.completed.is_(False), Task.deadline_at >= start, Task.deadline_at < end).order_by(Task.deadline_at))).scalars().all()
+    statement = select(Task).where(Task.completed.is_(False), Task.deadline_at >= start, Task.deadline_at < end)
+    tasks = (await db.execute(visible(statement, user).order_by(Task.deadline_at))).scalars().all()
     return {"count": len(tasks), "tasks": task_list(tasks)}
 
 
 @router.get("/quadrant/{quadrant}")
-async def get_tasks_by_quadrant(quadrant: str, db: AsyncSession = Depends(get_async_session)) -> dict:
+async def get_tasks_by_quadrant(
+    quadrant: str,
+    db: AsyncSession = Depends(get_async_session),
+    user: User = Depends(get_current_user),
+) -> dict:
     if quadrant not in ("Q1", "Q2", "Q3", "Q4"):
         raise HTTPException(status_code=400, detail="Use Q1, Q2, Q3, or Q4")
-    tasks = (await db.execute(select(Task).where(Task.quadrant == quadrant).order_by(Task.id))).scalars().all()
+    tasks = (await db.execute(visible(select(Task).where(Task.quadrant == quadrant), user).order_by(Task.id))).scalars().all()
     return {"quadrant": quadrant, "count": len(tasks), "tasks": task_list(tasks)}
 
 
 @router.get("/search")
-async def search_tasks(q: str = Query(min_length=2), db: AsyncSession = Depends(get_async_session)) -> dict:
+async def search_tasks(
+    q: str = Query(min_length=2),
+    db: AsyncSession = Depends(get_async_session),
+    user: User = Depends(get_current_user),
+) -> dict:
     query = q.strip()
     if len(query) < 2:
         raise HTTPException(status_code=422, detail="Enter at least 2 characters")
     pattern = f"%{query}%"
-    tasks = (await db.execute(select(Task).where(or_(Task.title.ilike(pattern), func.coalesce(Task.description, "").ilike(pattern))).order_by(Task.id))).scalars().all()
+    statement = select(Task).where(or_(Task.title.ilike(pattern), func.coalesce(Task.description, "").ilike(pattern)))
+    tasks = (await db.execute(visible(statement, user).order_by(Task.id))).scalars().all()
     if not tasks:
         raise HTTPException(status_code=404, detail="No tasks found")
     return {"query": query, "count": len(tasks), "tasks": task_list(tasks)}
 
 
 @router.get("/status/{task_status}")
-async def get_tasks_by_status(task_status: str, db: AsyncSession = Depends(get_async_session)) -> dict:
+async def get_tasks_by_status(
+    task_status: str,
+    db: AsyncSession = Depends(get_async_session),
+    user: User = Depends(get_current_user),
+) -> dict:
     if task_status not in ("completed", "pending"):
         raise HTTPException(status_code=404, detail="Use completed or pending")
-    tasks = (await db.execute(select(Task).where(Task.completed.is_(task_status == "completed")).order_by(Task.id))).scalars().all()
+    statement = select(Task).where(Task.completed.is_(task_status == "completed"))
+    tasks = (await db.execute(visible(statement, user).order_by(Task.id))).scalars().all()
     return {"status": task_status, "count": len(tasks), "tasks": task_list(tasks)}
 
 
 @router.get("/{task_id}", response_model=TaskResponse)
-async def get_task_by_id(task_id: int, db: AsyncSession = Depends(get_async_session)) -> TaskResponse:
-    return TaskResponse.from_task(await find_task(task_id, db))
+async def get_task_by_id(
+    task_id: int,
+    db: AsyncSession = Depends(get_async_session),
+    user: User = Depends(get_current_user),
+) -> TaskResponse:
+    return TaskResponse.from_task(await find_task(task_id, db, user))
 
 
 @router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
-async def create_task(task: TaskCreate, db: AsyncSession = Depends(get_async_session)) -> TaskResponse:
+async def create_task(
+    task: TaskCreate,
+    db: AsyncSession = Depends(get_async_session),
+    user: User = Depends(get_current_user),
+) -> TaskResponse:
     urgent = calculate_urgency(task.deadline_at)
     new_task = Task(
         title=task.title,
@@ -82,6 +118,7 @@ async def create_task(task: TaskCreate, db: AsyncSession = Depends(get_async_ses
         quadrant=determine_quadrant(task.is_important, urgent),
         deadline_at=as_utc(task.deadline_at) if task.deadline_at else None,
         completed=False,
+        user_id=user.id,
     )
     db.add(new_task)
     await db.commit()
@@ -90,8 +127,13 @@ async def create_task(task: TaskCreate, db: AsyncSession = Depends(get_async_ses
 
 
 @router.put("/{task_id}", response_model=TaskResponse)
-async def update_task(task_id: int, task_update: TaskUpdate, db: AsyncSession = Depends(get_async_session)) -> TaskResponse:
-    task = await find_task(task_id, db)
+async def update_task(
+    task_id: int,
+    task_update: TaskUpdate,
+    db: AsyncSession = Depends(get_async_session),
+    user: User = Depends(get_current_user),
+) -> TaskResponse:
+    task = await find_task(task_id, db, user)
     changes = task_update.model_dump(exclude_unset=True)
     if any(value is None for field, value in changes.items() if field not in ("description", "deadline_at")):
         raise HTTPException(status_code=422, detail="Null is not allowed for this field")
@@ -110,8 +152,12 @@ async def update_task(task_id: int, task_update: TaskUpdate, db: AsyncSession = 
 
 
 @router.patch("/{task_id}/complete", response_model=TaskResponse)
-async def complete_task(task_id: int, db: AsyncSession = Depends(get_async_session)) -> TaskResponse:
-    task = await find_task(task_id, db)
+async def complete_task(
+    task_id: int,
+    db: AsyncSession = Depends(get_async_session),
+    user: User = Depends(get_current_user),
+) -> TaskResponse:
+    task = await find_task(task_id, db, user)
     if not task.completed:
         task.completed = True
         task.completed_at = datetime.now(timezone.utc)
@@ -121,7 +167,11 @@ async def complete_task(task_id: int, db: AsyncSession = Depends(get_async_sessi
 
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_task(task_id: int, db: AsyncSession = Depends(get_async_session)) -> Response:
-    await db.delete(await find_task(task_id, db))
+async def delete_task(
+    task_id: int,
+    db: AsyncSession = Depends(get_async_session),
+    user: User = Depends(get_current_user),
+) -> Response:
+    await db.delete(await find_task(task_id, db, user))
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
